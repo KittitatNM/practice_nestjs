@@ -1,0 +1,50 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        include_metadata: true
+      http:
+        cors:
+          allowed_origins:
+            - '*'
+          allowed_headers:
+            - '*'
+        include_metadata: true
+  zipkin:
+
+processors:
+  batch:
+  attributes:
+    actions:
+      - key: seq
+        action: delete # remove sensitive element
+exporters:
+  # zipkin:
+  #   endpoint: 'http://localhost:9411/api/v2/spans'
+  logging:
+    loglevel: debug
+  prometheus:
+    endpoint: '127.0.0.1:9091' # this is weird because the exporter is actually an endpoint that must be scraped
+  otlp/elastic:
+    endpoint: 'http://apm-server:8200'
+extensions:
+  health_check:
+  pprof:
+  zpages:
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp, zipkin]
+      processors: [batch]
+      exporters: [zipkin,otlp/elastic]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus,otlp/elastic]
+    # logs:
+    #     receivers: [otlp]
+    #     processors: [batch]
+    #     exporters: [zipkin]
