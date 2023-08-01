@@ -2,12 +2,16 @@ import { W3CTraceContextPropagator } from '@opentelemetry/core'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import { BatchSpanProcessor, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { registerInstrumentations } from '@opentelemetry/instrumentation'
-import { diag, DiagConsoleLogger, DiagLogLevel } from '@opentelemetry/api'
+import { diag, DiagConsoleLogger, DiagLogLevel, metrics } from '@opentelemetry/api'
 import { Resource } from '@opentelemetry/resources'
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node'
 import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { ZipkinExporter } from "@opentelemetry/exporter-zipkin";
+import { MeterProvider, ConsoleMetricExporter, PeriodicExportingMetricReader, View, ExplicitBucketHistogramAggregation, InstrumentType } from '@opentelemetry/sdk-metrics'
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
+import { PrometheusExporter } from '@opentelemetry/exporter-prometheus'
+
 // const opentelemetry = require("@opentelemetry/sdk-node");
 
 // Set an internal logger for open telemetry to report any issues to your console/stdout
@@ -37,12 +41,65 @@ export const initTelemetry = (config: {
     // the exporter you have configured
     provider.addSpanProcessor(new BatchSpanProcessor(exporter))
     provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
-    provider.addSpanProcessor(new BatchSpanProcessor(new ZipkinExporter({url:'http://localhost:9411/api/v2/spans'})));
+    // provider.addSpanProcessor(new BatchSpanProcessor(new ZipkinExporter({ url: 'http://localhost:9411/api/v2/spans' })));
 
     // Initialize the propagator
     provider.register({
         propagator: new W3CTraceContextPropagator(),
     })
+
+
+    // const metricReader = new PeriodicExportingMetricReader({
+    //     exporter: new ConsoleMetricExporter(),
+    //     exportIntervalMillis: 3000
+    // })
+    const prometheusReader = new PrometheusExporter({
+        // endpoint: '/metrics',
+        port: 9464
+    });
+    const histogramView = new View({
+        aggregation: new ExplicitBucketHistogramAggregation([
+            0, 1, 5, 10, 15, 20, 25, 30,
+        ]),
+        instrumentName: 'process.cpu.utilization',
+        instrumentType: InstrumentType.OBSERVABLE_GAUGE,
+    });
+
+    const limitAttributesView = new View({
+        // only export the attribute 'environment'
+        attributeKeys: ['environment'],
+        // apply the view to all instruments
+        instrumentName: '*',
+    });
+    const metricReader = new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter({ url: config.telemetryUrl }),
+        exportIntervalMillis: 3000
+    })
+    const metricReader2 = new PeriodicExportingMetricReader({
+        exporter: new ConsoleMetricExporter(),
+        exportIntervalMillis: 3000
+    })
+
+    const myServiceMeterProvider = new MeterProvider({
+        resource: resource,
+        views: [limitAttributesView, histogramView]
+    });
+
+    const meter = myServiceMeterProvider.getMeter('test_cpu')
+    const cpuUsed = meter.createObservableGauge('cpu_used', {
+        description: 'Current CPU usage in percentage',
+    })
+    cpuUsed.addCallback((result) => {
+        result.observe(100)
+    })
+    myServiceMeterProvider.addMetricReader(prometheusReader)
+
+    myServiceMeterProvider.addMetricReader(metricReader)
+    
+    // myServiceMeterProvider.addMetricReader(metricReader2)
+    metrics.setGlobalMeterProvider(myServiceMeterProvider)
+
+
     // const sdk = new opentelemetry.NodeSDK({
     //     traceExporter: exporter,
     //     instrumentations: [getNodeAutoInstrumentations()],
@@ -66,5 +123,6 @@ export const initTelemetry = (config: {
     // Registering instrumentations / plugins
     registerInstrumentations({
         instrumentations: getNodeAutoInstrumentations(),
+        meterProvider: myServiceMeterProvider
     })
 }
